@@ -6,3 +6,11 @@
 *.fatbin
 *.pptx
 *.ppt
+*.exp
+*.a
+*.o
+*.exe
+*.lib
+example/H5alpha
+example/H5alpha/*
+example/H5alpha*
