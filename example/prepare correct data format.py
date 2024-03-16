@@ -15,6 +15,7 @@ import os
 plot = True
 fmax = 20
 fmin = 10
+min_bp_trace_to_save = 1500
 
 folder_to_import = 'H5alpha'
 
@@ -91,7 +92,7 @@ for file in files:
     xmax = x[-1]
     x0 = [x for x in range(xmax)]
     y0 = linear_interpolate(x, y, x0)
-    if xmax < 1000:
+    if xmax < min_bp_trace_to_save:
         # do not save if the sequence is too short, for test purposes
         continue
     
