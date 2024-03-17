@@ -42,8 +42,7 @@ for file in files:
     
     # remove the high force region
     il = 0
-    ih = len(x) - 1;
-    imid = (int)(il + (ih - il)>>1)
+    ih = len(x) - 1
     cnt = 0
     while(True):
         cnt += 1
@@ -65,8 +64,7 @@ for file in files:
     
     # remove the low force region
     il = 0
-    ih = len(x) - 1;
-    imid = (int)(il + (ih - il)>>1)
+    ih = len(x) - 1
     cnt = 0
     while(True):
         cnt += 1
