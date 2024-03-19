@@ -1,3 +1,8 @@
+// Command to build: 
+// nvcc main.cu -o main
+// Run executable:
+// main example/H5alpha.csv example/H5alpha.csv
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -11,26 +16,27 @@
 #define Y (threadIdx.y) // to simplify expressions 
 #define RANGE_OF_SEARCH_SHRINK 0.3f
 // #define TEST_PRINT
-#define TEST_PRINT2
+// #define TEST_PRINT2
 
-// struct to store a set of the unzipping traces, can be experimental data or the lib of theoretical unzipping traces.
 #pragma pack(push, 1)
+// struct to store a set of the unzipping traces, can be experimental data or the lib of theoretical unzipping traces.
 struct traces {
-    // Copying of this struct is very tricky!!!
     int n_traces;
     int *trace_lengths;
     float ** trace_y; // assume that the x values are integers from 0 to trace_lengths[i] - 1
-    // for trace i, the coordiantes of j-th point is (j, trace_y[i][j])
+    // Therefore, the coordiante of j-th point of the i-th trace's is (j, trace_y[i][j]), where i < n_traces and j < trace_lengths[n_traces].
 };
 #pragma pack(pop)
+
 traces* copy_to_dev(const traces* h_t) {
 /*
-// A general formula to write code to copy a float *** array:
-// Theoreticaly the number of nested loops can continue when the dimension become larger and larger. The #loop is one less than the #asterisk
+// Very tricky to copy a ptr array of ptrs (of ptrs of ptrs...)!
+// Theoreticaly the #loop is one less than the #asterisk
 //ptr1, ptr2, ptr3 are all helper variables, they need to be released!
+// Here is an exmple of 3D array (float ***, #asterisk is 3, need a nested for loop of depth = 2 to copy). 
+// I am not sure if there is better way to do it.
 
-//float data[i][j][k]; // assume that this is the data and data dimensions
-
+//float data[i][j][k]; // data
 float *** ptr1 = new[i];
 for(i){
     float ** ptr2 = new[j];
@@ -45,43 +51,35 @@ for(i){
     ptr1[i] = ptr2;
     delete[] ptr2;
 }
-float *** d_data;
+float *** d_data;//d_data is the pointer to the array on GPU
 cudaMalloc (d_data);
 cudaMemcpy(d_data, ptr1, length_of_dim_i)
 delete[] ptr1;
-
-//d_data is the pointer to the array on GPU
-
 */
-     // very tedious somehow!
     int* helper1;
     cudaMalloc((void**)&helper1, h_t->n_traces * sizeof(int));
     cudaMemcpy(helper1, h_t->trace_lengths, h_t->n_traces * sizeof(int), cudaMemcpyHostToDevice);
 
-    float ** helper2 = new float*[h_t->n_traces];// helper 2 is a ptr points to an array on host, the array is addresses to arrays which is also on device 
-    for (int i = 0; i < h_t->n_traces; ++i) {
-        // the 2 lines of code are correct, they are from my optimization of testing code. However, it is too brain xxxxx so I replaced it with clearer version!
-        // cudaMalloc((void**)(helper2 + i), h_t->trace_lengths[i] * sizeof(float));
-        // cudaMemcpy(helper2[i], (h_t->trace_y)[i], h_t->trace_lengths[i] * sizeof(float), cudaMemcpyHostToDevice);
-        float * ptr;
+    float ** helper2 = new float*[h_t->n_traces];
+    for (int i = 0; i < h_t->n_traces; ++i) {float * ptr;
         cudaMalloc((void**)&ptr, h_t->trace_lengths[i] * sizeof(float));
         cudaMemcpy(ptr, (h_t->trace_y)[i], h_t->trace_lengths[i] * sizeof(float), cudaMemcpyHostToDevice);
         (helper2[i]) = ptr;
     }
 
-    float ** helper3;// helper 2 is a ptr points to an array on device, the array is addresses to arrays which is also on device
+    float ** helper3;
     cudaMalloc((void**)&helper3, h_t->n_traces * sizeof(float*));
     cudaMemcpy(helper3, helper2, h_t->n_traces * sizeof(float*), cudaMemcpyHostToDevice);
     delete[] helper2;
 
-    // copy the value of "h_t->n_traces, helper1, helper3" to device, and save address in d_t
     traces h_temp {h_t->n_traces, helper1, helper3};
     traces* d_t;
     cudaMalloc((void**)&d_t, sizeof(traces));
     cudaMemcpy(d_t, &h_temp, sizeof(traces), cudaMemcpyHostToDevice);
     return d_t;
 }
-void dev_del(traces* d_t) {
+
+__device__ void dev_del(traces* d_t) {
     for (int i = 0; i < d_t->n_traces; ++i){
         cudaFree(d_t->trace_y[i]);
     }
@@ -106,26 +104,18 @@ bool import(const char * const path, traces * imported, std::vector<std::string>
         return false;
     } 
 
-    // Read lines from the file
-    std::string line;
-
-    int temp = 0;
-    
     int *trace_lengths_temp = new int [100000];
     float ** trace_y_temp   = new float *[100000];
-
+    int temp = 0;
+    std::string line;
     while(++temp  <= start && std::getline(file_in, line)) {}
     int traceIdx = 0;
     while (traceIdx < (end - start) && std::getline(file_in, line)) {
-        // Split the line by comma and convert to float
         std::istringstream iss(line);
-
         std::string token;
 
-        // Skip first and last elements (assuming they are not needed)
-        std::getline(iss, token, ','); // Skip first element
+        std::getline(iss, token, ','); // The first element is trace name
         gene_names.emplace_back(token);
-        //std::cout << token << std::endl;
 
         std::vector<float> values;
         while (std::getline(iss, token, ',')) {
@@ -162,18 +152,17 @@ bool import(const char * const path, traces * imported, std::vector<std::string>
     return true;
 }
 
-// placeholder
-__device__ float score_for_test(float x, float y, float z) {
-    // use cross-correlation as sceo
-    return (float)(100.0f - (x - N/2 - z) * (x - N/2 - z) - (y - N/2 + z) * (y - N/2 + z));
-}
-__device__ float cross_correlation(const float* exp, const float* lib, int len_exp, int len_lib, float offset, float scaling) {
-    // use cross-correlation as score
+__device__ float score_func(const float* exp, const float* lib, int len_exp, int len_lib, float offset, float scaling) {
+    // use a slightly modified cross-correlation as score function to align 2 traces
     float j_frac;
     int j = 0;
     int i = 0;
+
+    float exp_i = 0.0f;
+    float ac_lib = 0.0f;
+    float ac_exp = 0.0f;
     float cc = 0.0f;
-    float cnt_overlap = 0;
+
     for(; i < len_lib; ++i){
         j_frac = (i - offset) / scaling; // = (x_theory - offset) / scaling = x coordinate of experimental trace
         if (j_frac < 0) {
@@ -182,12 +171,16 @@ __device__ float cross_correlation(const float* exp, const float* lib, int len_e
         if (j_frac >= len_exp) {
             break;
         }
-        ++cnt_overlap;
         j = j_frac;
-        cc += lib[i] * (exp[j] * (j + 1 - j_frac) + exp[j + 1] * (j_frac - j)); //interplation
+        exp_i = exp[j] * (j + 1 - j_frac) + exp[j + 1] * (j_frac - j); // interp experimental data to theory
+        ac_lib += lib[i] * lib[i];
+        ac_exp += exp_i * exp_i;
+        cc += lib[i] * exp_i; //interplation
     }
-    cc /= cnt_overlap;
-    return cc;// * (i + 1) * (j + 1) / len_lib / len_exp; // there is a penalty for length difference, or how many points are used for cc calculation.
+    float score = cc * cc / ac_lib / ac_exp;
+    float panalty = ((i + 1)/ len_lib) * ((j + 1)  / len_exp); // there should be a penalty when less points overlap.
+
+    return score * (0.9f + 0.1f * panalty) * (2.0f / (scaling + 1.0f / scaling));
 }
 
 __global__ void zero_the_force(traces * ptr) {
@@ -212,8 +205,6 @@ __global__ void kernel(const traces *lib_traces, const traces *exp_traces, float
     __shared__ float cache_correlation[N][N];
     __shared__ int   cache_offset_idx[N][N];
     __shared__ int   cache_scaling_idx[N][N];
-    __shared__ float ac_exp;
-    __shared__ float ac_lib;
     __shared__ float min_scaling;
     __shared__ float max_scaling;
     __shared__ float min_offset;
@@ -230,26 +221,13 @@ __global__ void kernel(const traces *lib_traces, const traces *exp_traces, float
     // memcpy(exp_trace,(exp_traces->trace_y)[blockIdx.y], sizeof(float) * exp_len);
     float* exp_trace = (exp_traces->trace_y)[blockIdx.x];
     
-    // give thread (0,0) task: autocorrelation
     if (X == 0 && Y == 0) {
-        ac_lib = 0.0f;
-        for(int i = 0; i < lib_len; ++i){
-            ac_lib += lib_trace[i] * lib_trace[i];
-        }
-        ac_lib /= lib_len;
-        ac_lib = sqrt(ac_lib);
-
-        ac_exp = 0.0f;
-        for(int i = 0; i < exp_len; ++i){
-            ac_exp += exp_trace[i] * exp_trace[i];
-        }
-        ac_exp /= exp_len;
-        ac_exp = sqrt(ac_exp);
+        // not necessary to use __shared__
         // set scaling and offset
-        min_scaling = 0.95;
-        max_scaling = 1.05;
-        min_offset  = -100;
-        max_offset  = 100;
+        min_scaling = 0.95f;
+        max_scaling = 1.05f;
+        min_offset  = -200.0f;
+        max_offset  = 200.0f;
     }
     __syncthreads();
     
@@ -263,7 +241,7 @@ __global__ void kernel(const traces *lib_traces, const traces *exp_traces, float
 
     // The surface has local minima so I cannot use general minimization method, for example downhill simplex.
     // I have to use a brute force search, after each loop I shrink the search area a little bit.
-    const int max_iteration = 10;
+    const int max_iteration = 20;
     int iteration = 0;
     while(true) {
         // reset cache for this thread, the values will be changed during reduction to same the max_correlations' threadIdx.x and threadIdx.y
@@ -274,7 +252,7 @@ __global__ void kernel(const traces *lib_traces, const traces *exp_traces, float
         float scaling = (float)Y/(N - 1) * (max_scaling  - min_scaling)  + min_scaling;
 
         // Calculate the correlation:
-        cache_correlation[X][Y] = cross_correlation(exp_trace, lib_trace, exp_len, lib_len, offset, scaling) / ac_exp / ac_lib; 
+        cache_correlation[X][Y] = score_func(exp_trace, lib_trace, exp_len, lib_len, offset, scaling); 
         // cache_correlation[X][Y] = score_for_test((float)X, (float)Y, blockIdx.x); 
         __syncthreads(); // wait for all correlation is calculated
         
@@ -330,7 +308,7 @@ __global__ void kernel(const traces *lib_traces, const traces *exp_traces, float
     
 
     #ifdef TEST_PRINT2
-    if(X == 0 && Y == 0 && blockIdx.x == blockIdx.y) {
+    if(X == 0 && Y == 0) {
         //printf("\t'kernel' print: block %d,%d, corr[%d][%d] = %f.\n", blockIdx.x, blockIdx.y, cache_offset_idx[0][0], cache_scaling_idx[0][0], cache_correlation[0][0]);
         printf("\t'kernel' block (%d,%d)(%d), corr: %f, offset: %f, scaling: %f.\n", blockIdx.x, blockIdx.y, gridDim.x * blockIdx.y + blockIdx.x,
                                     best_corr   [gridDim.x * blockIdx.y + blockIdx.x], 
@@ -339,21 +317,17 @@ __global__ void kernel(const traces *lib_traces, const traces *exp_traces, float
     }
     #endif
 
-    // free(lib_trace);
-    // free(exp_trace);
 }
 
 #ifdef DLL
-// the output function
-extern "C" __declspec(dllexport) int cuda_main(const traces* lib_traces, const float * experiment, int exp_len) {
+extern "C" __declspec(dllexport) float*** align_traces(const traces* lib_traces, const float * experiment, int exp_len) {
 #else
-int cuda_main(const traces* lib_traces, const traces* exp_traces) {
+float*** align_traces(const traces* lib_traces, const traces* exp_traces) {
 #endif
     
     dim3 blockDim(N, N);
     dim3 gridDim(exp_traces->n_traces, lib_traces->n_traces);
     int grid_size = exp_traces->n_traces * lib_traces->n_traces;
-
     
     traces * d_exp = copy_to_dev(exp_traces);
     traces * d_lib = copy_to_dev(lib_traces);
@@ -366,30 +340,50 @@ int cuda_main(const traces* lib_traces, const traces* exp_traces) {
     cudaMalloc((void**)&d_best_offset, sizeof(float) * grid_size);
     cudaMalloc((void**)&d_best_scaling, sizeof(float) * grid_size);
 
+
+
     zero_the_force<<<1, lib_traces->n_traces>>>(d_lib);
     zero_the_force<<<1, exp_traces->n_traces>>>(d_exp);
     kernel<<<gridDim, blockDim>>>(d_lib, d_exp, d_best_corr, d_best_offset, d_best_scaling);
 
 
-    
+
     float * best_corr   = new float[grid_size];
     float * best_offset = new float[grid_size];
     float * best_scaling  = new float[grid_size];
     cudaMemcpy(best_corr,   d_best_corr,   sizeof(float) * grid_size, cudaMemcpyDeviceToHost);
     cudaMemcpy(best_offset, d_best_offset, sizeof(float) * grid_size, cudaMemcpyDeviceToHost);
     cudaMemcpy(best_scaling,  d_best_scaling,  sizeof(float) * grid_size, cudaMemcpyDeviceToHost);
-
-    // for (int i = 0; i < grid_size; ++i) {
-    //     std::cout << ">>" << best_corr[i] << ',' << best_offset[i] << std::endl;
-    // }
-
     cudaFree(d_best_corr);
     cudaFree(d_best_offset);
     cudaFree(d_best_scaling);
-    dev_del(d_lib);
-    dev_del(d_exp);
 
-    return 0;
+    
+    // dev_del(d_lib);
+    // dev_del(d_exp);
+    
+    float** best_corr_2d    = new float*[gridDim.x];
+    float** best_offset_2d  = new float*[gridDim.x];
+    float** best_scaling_2d = new float*[gridDim.x];
+    for (int x = 0; x < gridDim.x; ++x) {
+        best_corr_2d   [x] = new float[gridDim.y];
+        best_offset_2d [x] = new float[gridDim.y];
+        best_scaling_2d[x] = new float[gridDim.y];
+        for (int y = 0; y < gridDim.y; ++y) {
+            best_corr_2d   [x][y] = best_corr   [y * gridDim.x + x];
+            best_offset_2d [x][y] = best_offset [y * gridDim.x + x];
+            best_scaling_2d[x][y] = best_scaling[y * gridDim.x + x];
+        }
+    }
+    delete[] best_corr;
+    delete[] best_offset;
+    delete[] best_scaling;
+    
+    float *** res = new float **[3];
+    res[0] = best_corr_2d;
+    res[1] = best_offset_2d;
+    res[2] = best_scaling_2d;
+    return res;
 }
 
 int about(){
@@ -408,25 +402,61 @@ int about(){
     return 0;
 }
 
+bool save_csv_then_free(const char* const filename_out, float** data, size_t rows, size_t cols) {
+    
+    std::ofstream file(filename_out);
+    if (!file.is_open()) {
+        std::cerr << "Error: Failed to open file for writing." << std::endl;
+        return false;
+    }
+    // Write data to CSV file
+    for (size_t x = 0; x < rows; ++x) {
+        float * row = data[x];
+        for (size_t y = 0; y < cols; ++y) {
+            file << row[y];
+            if (y < cols - 1) {
+                file << ",";
+            }
+        }
+        delete [] row;
+        file << std::endl;
+    }
+    delete[] data;
+    file.close();
+    return true;
+}
+
 #define TEST
 #ifdef TEST
-int main(int argc, char * argv[]) {
-    about();
-    
-    traces mimic_exp {};
-    std::vector<std::string> xxx;
-    import("example/H5alpha.txt", &mimic_exp, xxx, 0, 50);
+int main(int argc, const char * const argv[]) {
+    // about();
+    // const char * const temp = "example/H5alpha.txt";
+    if (argc < 3) {
+        printf("requires 2 file names: 1) experimental data and 2) theory trace lib");
+        return 1;
+    }
 
-    traces library {};
-    // std::vector<std::string> gene_names;
-    // import("example/H5alpha.txt", &library, gene_names);
+    traces exp_data {};
+    std::vector<std::string> exp_trace_names;
+    import(argv[1], &exp_data, exp_trace_names, 0, 50);
+
+    traces theory_lib {};
+    std::vector<std::string> theory_lib_gene_names;
+    import(argv[2], &theory_lib, theory_lib_gene_names, 0, 50);
 
 
-    cuda_main(&mimic_exp, &mimic_exp);
 
-    // destruct
-    host_del(&library);
-    host_del(&mimic_exp);
+    float*** result = align_traces(&exp_data, &theory_lib);
+
+
+
+    save_csv_then_free("corr.csv",result[0], exp_data.n_traces, theory_lib.n_traces);
+    save_csv_then_free("offset.csv",result[1], exp_data.n_traces, theory_lib.n_traces);
+    save_csv_then_free("scaling.csv",result[2], exp_data.n_traces, theory_lib.n_traces);
+
+    delete[] result;
+    host_del(&theory_lib);
+    host_del(&exp_data);
     return 0;
 }
 #endif

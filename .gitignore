@@ -11,6 +11,7 @@
 *.o
 *.exe
 *.lib
+*.csv
 example/H5alpha
 example/H5alpha/*
 example/H5alpha*
