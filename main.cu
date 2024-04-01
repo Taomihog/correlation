@@ -18,6 +18,8 @@
 // #define TEST_PRINT
 // #define TEST_PRINT2
 
+
+// data struct and helper functions for copy and delete
 #pragma pack(push, 1)
 // struct to store a set of the unzipping traces, can be experimental data or the lib of theoretical unzipping traces.
 struct traces {
@@ -27,7 +29,6 @@ struct traces {
     // Therefore, the coordiante of j-th point of the i-th trace's is (j, trace_y[i][j]), where i < n_traces and j < trace_lengths[n_traces].
 };
 #pragma pack(pop)
-
 traces* copy_to_dev(const traces* h_t) {
 /*
 // Very tricky to copy a ptr array of ptrs (of ptrs of ptrs...)!
@@ -78,8 +79,8 @@ delete[] ptr1;
     cudaMemcpy(d_t, &h_temp, sizeof(traces), cudaMemcpyHostToDevice);
     return d_t;
 }
-
 __device__ void dev_del(traces* d_t) {
+    //don't use, it need to work in a "copy to dev" way.
     for (int i = 0; i < d_t->n_traces; ++i){
         cudaFree(d_t->trace_y[i]);
     }
@@ -200,6 +201,7 @@ __global__ void zero_the_force(traces * ptr) {
     }
 }
 
+//calculate the 
 __global__ void kernel(const traces *lib_traces, const traces *exp_traces, float * best_corr, float * best_offset, float * best_scaling) {
     // resolution of both theory and experiment is 1 nm per point. So, the total extension = data_size
     __shared__ float cache_correlation[N][N];
@@ -358,7 +360,7 @@ float*** align_traces(const traces* lib_traces, const traces* exp_traces) {
     cudaFree(d_best_offset);
     cudaFree(d_best_scaling);
 
-    
+    // don't work for now.
     // dev_del(d_lib);
     // dev_del(d_exp);
     
@@ -438,11 +440,14 @@ int main(int argc, const char * const argv[]) {
 
     traces exp_data {};
     std::vector<std::string> exp_trace_names;
-    import(argv[1], &exp_data, exp_trace_names, 0, 50);
+    import(argv[1], &exp_data, exp_trace_names, 1, 10);
 
     traces theory_lib {};
     std::vector<std::string> theory_lib_gene_names;
-    import(argv[2], &theory_lib, theory_lib_gene_names, 0, 50);
+    import(argv[2], &theory_lib, theory_lib_gene_names, 2, 11);
+    for(auto gname:theory_lib_gene_names) {
+        std::cout<< gname << std::endl;
+    }
 
 
 
